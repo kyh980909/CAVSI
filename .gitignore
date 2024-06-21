@@ -1,0 +1,7 @@
+cav/
+data/
+test_data/
+.ipynb_checkpoints
+.vscode/
+__pycache__/
+
