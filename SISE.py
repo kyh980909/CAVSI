@@ -7,13 +7,14 @@ from PIL import Image
 from skimage.metrics import structural_similarity as ssim
 
 class SISE():
-    def __init__(self, model, model_name, img_path, class_idx, grouping_thr=0.5, detail=0) -> None:
+    def __init__(self, model, model_name, img_path, class_idx, img_size=(224,224), grouping_thr=0.5, detail=0) -> None:
         self.model = model
         self.input_size = model.input_shape[1:3]
         self.model_name = model_name
         self.feature_maps = {}
         self.avg_grads = {}
-        self.img = Image.open(img_path).resize((224, 224))
+        self.img = Image.open(img_path).resize(img_size)
+        self.img_size= img_size
         img_arr = np.asarray(self.img)[:, :, :3] / 255.
         self.input_img = np.expand_dims(img_arr, 0)
         self.class_idx = class_idx
@@ -35,18 +36,8 @@ class SISE():
             block = [4, 38, 80, 142, 174]
         elif self.model_name=='resnet152':
             block = [4, 38, 120, 482, 514]
-            outputs = [self.model.layers[i].output for i in block]
-            feature_map_extraction_model = Model([self.model.inputs], outputs)
-
-            # Layer별 feature map 추출
-            feature_maps = {}
-            feature_maps_list = feature_map_extraction_model.predict(self.input_img)
-
-            for i, fmap in enumerate(feature_maps_list):
-                feature_maps[f'conv{i}'] = tf.convert_to_tensor(np.squeeze(fmap))
-
-            self.feature_maps = feature_maps
-
+        elif self.model_name == 'inceptionv3':
+            block = [9, 16, 86, 228, 310]
         else:
             assert print('Not support')
 
@@ -67,91 +58,13 @@ class SISE():
     def feature_filtering(self):
         # conv layer별 피쳐맵과 confidence score(softmax 값)의 gradient 계산
         if self.model_name == 'vgg16':
-            block = [1, 4, 8, 12, 16, 18]
-            outputs = [self.model.layers[i].output for i in block]
-
-            grad_model = Model([self.model.inputs], outputs)
-
-            with tf.GradientTape(persistent=True) as tape:
-                *conv_outputs, pred = grad_model(self.input_img)
-                class_channel = pred[:, self.class_idx]
-
-            grads = {}
-            for i, conv in enumerate(conv_outputs):
-                grads[f'conv{i}'] = tape.gradient(class_channel, conv)[0]
-
-            # 피쳐맵의 평균 gradient 계산
-            avg_grads = {}
-            for k, v in grads.items():
-                avg_grads[k] = tf.reduce_mean(v, axis=(0,1))
-
-            self.avg_grads = avg_grads
-
-            # 피쳐맵의 평균 gradient가 0이 넘는 피쳐맵만 필터링
-            filtered_feature_maps = {}
-            for k, v in avg_grads.items():
-                transpose = tf.transpose(self.feature_maps[k], perm=[2,0,1])[v>0] # 필터링 용이를 위해 transpose
-                filtered_feature_maps[k] = tf.transpose(transpose, perm=[1,2,0]) # transpose 다시 되돌리기
-
-            # 필터링 된 피쳐맵 수 비교
-            sum1 = sum2 = 0
-            for k1, k2 in zip(avg_grads.values(), filtered_feature_maps.values()):
-                if self.detail == 1:
-                    print(f'{len(k1)} -> {k2.shape[-1]}, {len(k1)-k2.shape[-1]}개 감소 (감소율: {(k2.shape[-1]-len(k1))/len(k1)*100}%)')
-                sum1 += len(k1)
-                sum2 += k2.shape[-1]
-
-            if self.detail == 1:
-                print('\nTotal')
-                print(f'{sum1} -> {sum2}, {sum1-sum2}개 감소 (감소율: {(sum2-sum1)/sum1*100}%)')
-
-            self.filtered_feature_maps = filtered_feature_maps
-            self.total_reduction_rate = (sum2-sum1)/sum1*100
-
+            block = [1, 4, 8, 12, 16, 22]
         elif self.model_name == 'resnet50':
             block = [2, 38, 80, 142, 174, 176]
         elif self.model_name=='resnet152':
             block = [4, 38, 120, 482, 514, 516]
-            outputs = [self.model.layers[i].output for i in block]
-
-            grad_model = Model([self.model.inputs], outputs)
-
-            with tf.GradientTape(persistent=True) as tape:
-                *conv_outputs, pred = grad_model(self.input_img)
-                class_channel = pred[:, self.class_idx]
-
-            grads = {}
-            for i, conv in enumerate(conv_outputs):
-                grads[f'conv{i}'] = tape.gradient(class_channel, conv)[0]
-
-            # 피쳐맵의 평균 gradient 계산
-            avg_grads = {}
-            for k, v in grads.items():
-                avg_grads[k] = tf.reduce_mean(v, axis=(0,1))
-
-            self.avg_grads = avg_grads
-
-            # 피쳐맵의 평균 gradient가 0이 넘는 피쳐맵만 필터링
-            filtered_feature_maps = {}
-            for k, v in avg_grads.items():
-                transpose = tf.transpose(self.feature_maps[k], perm=[2,0,1])[v>0] # 필터링 용이를 위해 transpose
-                filtered_feature_maps[k] = tf.transpose(transpose, perm=[1,2,0]) # transpose 다시 되돌리기
-
-            # 필터링 된 피쳐맵 수 비교
-            sum1 = sum2 = 0
-            for k1, k2 in zip(avg_grads.values(), filtered_feature_maps.values()):
-                if self.detail == 1:
-                    print(f'{len(k1)} -> {k2.shape[-1]}, {len(k1)-k2.shape[-1]}개 감소 (감소율: {(k2.shape[-1]-len(k1))/len(k1)*100}%)')
-                sum1 += len(k1)
-                sum2 += k2.shape[-1]
-
-            if self.detail == 1:
-                print('\nTotal')
-                print(f'{sum1} -> {sum2}, {sum1-sum2}개 감소 (감소율: {(sum2-sum1)/sum1*100}%)')
-
-            self.filtered_feature_maps = filtered_feature_maps
-            self.total_reduction_rate = (sum2-sum1)/sum1*100
-        
+        elif self.model_name=='inceptionv3':
+            block = [9, 16, 86, 228, 310, 312]
         else:
             assert print('Not support')
         
@@ -205,19 +118,19 @@ class SISE():
                 if i+512 >= self.filtered_feature_maps[k].shape[2]:
                     if k in postprocessed_feature_maps:
                         try:
-                            postprocessed_feature_maps[k] = np.concatenate((postprocessed_feature_maps[k], cv2.resize(self.filtered_feature_maps[k][:, :, i:].numpy(), (224,224), interpolation=cv2.INTER_LINEAR)), axis=2)
+                            postprocessed_feature_maps[k] = np.concatenate((postprocessed_feature_maps[k], cv2.resize(self.filtered_feature_maps[k][:, :, i:].numpy(), self.img_size, interpolation=cv2.INTER_LINEAR)), axis=2)
                         except Exception:
-                            postprocessed_feature_maps[k] = np.concatenate((postprocessed_feature_maps[k], np.expand_dims(cv2.resize(self.filtered_feature_maps[k][:, :, i:].numpy(), (224,224), interpolation=cv2.INTER_LINEAR), 2)), axis=2)
+                            postprocessed_feature_maps[k] = np.concatenate((postprocessed_feature_maps[k], np.expand_dims(cv2.resize(self.filtered_feature_maps[k][:, :, i:].numpy(), self.img_size, interpolation=cv2.INTER_LINEAR), 2)), axis=2)
                     else:
-                        postprocessed_feature_maps[k] = cv2.resize(self.filtered_feature_maps[k][:, :, i:].numpy(), (224,224), interpolation=cv2.INTER_LINEAR)
+                        postprocessed_feature_maps[k] = cv2.resize(self.filtered_feature_maps[k][:, :, i:].numpy(), self.img_size, interpolation=cv2.INTER_LINEAR)
                 else:
                     if k in postprocessed_feature_maps:
                         try:
-                            postprocessed_feature_maps[k] = np.concatenate((postprocessed_feature_maps[k], cv2.resize(self.filtered_feature_maps[k][:, :, i:i+512].numpy(), (224,224), interpolation=cv2.INTER_LINEAR)), axis=2)
+                            postprocessed_feature_maps[k] = np.concatenate((postprocessed_feature_maps[k], cv2.resize(self.filtered_feature_maps[k][:, :, i:i+512].numpy(), self.img_size, interpolation=cv2.INTER_LINEAR)), axis=2)
                         except Exception:
-                            postprocessed_feature_maps[k] = np.concatenate((postprocessed_feature_maps[k], np.expand_dims(cv2.resize(self.filtered_feature_maps[k][:, :, i:i+512].numpy(), (224,224), interpolation=cv2.INTER_LINEAR), 2)), axis=2)
+                            postprocessed_feature_maps[k] = np.concatenate((postprocessed_feature_maps[k], np.expand_dims(cv2.resize(self.filtered_feature_maps[k][:, :, i:i+512].numpy(), self.img_size, interpolation=cv2.INTER_LINEAR), 2)), axis=2)
                     else:
-                        postprocessed_feature_maps[k] = cv2.resize(self.filtered_feature_maps[k][:, :, i:i+512].numpy(), (224,224), interpolation=cv2.INTER_LINEAR)
+                        postprocessed_feature_maps[k] = cv2.resize(self.filtered_feature_maps[k][:, :, i:i+512].numpy(), self.img_size, interpolation=cv2.INTER_LINEAR)
 
             for i in range(postprocessed_feature_maps[k].shape[-1]):
                 if np.max(postprocessed_feature_maps[k][:,:,i]) == 0.0:
@@ -448,7 +361,7 @@ class SISE():
             masks = np.expand_dims(tf.transpose(self.postprocessed_feature_maps[k], perm=[2,0,1]), axis=-1)
             masked = self.input_img*masks
             preds = self.model.predict(masked)
-            layer_visualization_maps[k] = preds.T.dot(masks.reshape(masks.shape[0],-1)).reshape(-1, 224,224)
+            layer_visualization_maps[k] = preds.T.dot(masks.reshape(masks.shape[0],-1)).reshape(-1, self.img_size[0], self.img_size[1])
 
         self.layer_visualization_maps = layer_visualization_maps
 
